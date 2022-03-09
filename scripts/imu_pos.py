@@ -19,175 +19,87 @@ class imu_camerapos:
         self._client.connect()
 
         # Constants
-        self.deadband = 0.01
+        self.deadband_x = 0.15
+        self.deadband_y = 0.15
         self.G = 9.81
         self.time = time.time()
 
-        # x update
-        self.first_pass = True
-        self.velocity_0 = 0
-        self.acceleration_0 = 0
-        self.position_0 = 0
+
         self.velocity = 0
         self.acceleration = 0
-        self.position = 0
+        #self.position = 0
 
-        # y update
-        self.first_pass_y = True
-        self.velocity_0_y = 0
-        self.acceleration_0_y = 0
-        self.position_0_y = 0
         self.velocity_y = 0
         self.acceleration_y = 0
-        self.position_y = 0
+        #self.position_y = 0
 
-        # z update
-        self.first_pass_z = True
-        self.velocity_0_z = 0
-        self.acceleration_0_z = 0
-        self.position_0_z = 0
         self.velocity_z = 0
         self.acceleration_z = 0
-        self.position_z = 0
+        #self.position_z = 0
 
         # Stating position of the camera
         self.camera_name = '/ambf/env/cameras/main_camera'
         self.mCam_obj = self._client.get_obj_handle(self.camera_name)
         camera_pos = self.mCam_obj.get_pos()
-        # Add the position changed based on the current pos (so it doesn't jump at the start)
-        self.position_curr_x = camera_pos.x # Updates to this will come from double integration
-        self.position_curr_y = camera_pos.y
-        self.position_curr_z = camera_pos.z
+        self.position = camera_pos.x # Initial position of the camera ! Updates to this will come from double integration
+        self.position_y = camera_pos.y
+        self.position_z = camera_pos.z
+
+        self.min_y = 0.
+        self.max_y = 0.
 
     def callback(self, data):
-        #TODO: Need to figure out direction
 
         # There is a unit issue happening here! - changes need to be more obvious
         x = data.linear_acceleration.x # Unit = m/s^2
         y = data.linear_acceleration.y
-        z = data.linear_acceleration.z
-        #print('acc x:{}, y:{}, z:{}'.format(x,y,z))
+        z = data.linear_acceleration.z - self.G
 
-        #TODO: figure out direction change issue
+        vel, pos, acc = self.computerPosition(x, self.velocity, self.position, self.acceleration, self.deadband_x)
+        self.velocity = vel
+        self.position = pos
+        self.acceleration = acc
+        #print('position | x', self.position)
 
-        self.updateXposition(x)
-        self.updateYposition(y)
-        self.updateZposition(z - self.G) # Add in gravity compensation
+        vel, pos, acc = self.computerPosition(y, self.velocity_y, self.position_y, self.acceleration_y, self.deadband_y)
+        self.velocity_y = vel
+        self.position_y = pos
+        self.acceleration_y = acc
+        #print('position | y', self.position_y)
 
-        # Update reference variables - which will act like previous position, velcotiy and accleration in the next pass
-        #print("Camera position is x: {}, y: {}, z: {}".format(self.position, self.position_y, self.position_z))
+        # vel, pos, acc = self.computerPosition(z, self.velocity_z, self.position_z, self.acceleration_z)
+        # self.velocity_z = vel
+        # self.position_z = pos
+        # self.acceleration_z = acc
+        #print('position x |', self.position, '| position y |', self.position_y) #'| position z |', self.position_z)
+
         self.time = time.time()
 
         # Update the camera
         ros_point = Point()
+        ros_point.x = self.position_z
+        ros_point.y = self.position_y
+        ros_point.z = self.position
 
-        ros_point.x = self.position_curr_x #+ self.position_z
-        ros_point.y = self.position_curr_y + self.position_y
-        ros_point.z = self.position_curr_z #+ self.position
 
         self.mCam_obj.set_pos(ros_point.x, ros_point.y, ros_point.z)
 
+    #TODO: make the current position just the starting point and then update the position from there - so we're not ever resetting to that place we just
+    # have position be an accurate reference - double check that code works with emailed version
 
-    def updateXposition(self, x):
+    def computerPosition(self, acc, vel_global, pos_global, acc_global, deadband):
 
+        dt = time.time() - self.time
 
-        # Just do it for x to start
-        if self.first_pass is True:
-            delta_a = x - self.acceleration_0
-            if np.abs(delta_a) < self.deadband: # This is called the deadband
-                self.position = self.position
-                self.velocity = self.velocity
-                self.acceleration = x
-            else:
-                velocity = self.velocity_0 + ((self.acceleration_0 + x)*(1/2))*(time.time() - self.time)
-                delta_a = x - self.acceleration_0
-                position = self.position_0 + ((velocity +  self.velocity_0)*(1/2))*(time.time() - self.time)
-                self.first_pass = False
-                self.velocity = velocity
-                self.position = position
-                self.acceleration = x
+        if np.abs(acc) < deadband:
+            acc = 0.
+            position = pos_global
+            velocity = vel_global + ((acc_global + acc)*(1./2.))*dt # compute dt once
         else:
-            delta_a = x - self.acceleration
-            if np.abs(delta_a) < self.deadband:
-                self.position = self.position
-                self.velocity = self.velocity
-                self.acceleration = x
-            else:
-                velocity = self.velocity + ((self.acceleration + x)*(1/2))*(time.time() - self.time)
-                position = self.position + ((velocity +  self.velocity)*(1/2))*(time.time() - self.time)
-                self.velocity = velocity
-                self.position = position
-                self.acceleration = x
+            velocity = vel_global + ((acc_global + acc)*(1./2.))*dt # compute dt once
+            position = pos_global + ((vel_global + velocity)*(1./2.))*dt
 
-
-    def updateYposition(self, y):
-
-
-        if self.first_pass_y is True:
-            delta_a = y - self.acceleration_0_y
-            if np.abs(y) < self.deadband:
-                #print('deadband active: {}'.format(y))
-                y = 0
-                self.position_y = self.position_y
-                self.velocity_y = self.velocity_y
-                self.acceleration_y = y
-            else:
-                print('deadband inactive: {}'.format(y))
-                velocity = self.velocity_0_y + ((self.acceleration_0_y + y)*(1/2))*(time.time() - self.time)
-                delta_a = y - self.acceleration_0_y
-                position = self.position_0_y + ((velocity +  self.velocity_0_y)*(1/2))*(time.time() - self.time)
-                self.first_pass_y = False
-                self.velocity_y = velocity
-                self.position_y = position
-                self.acceleration_y = y
-                print('started')
-        else:
-            delta_a = y - self.acceleration_y
-            #if np.abs(delta_a) < self.deadband:
-            #if (0 < y < self.deadband) or (0 > y > self.deadband_neg):
-            if np.abs(y) < self.deadband:
-                #print('deadband active: {}'.format(y))
-                y = 0
-                self.position_y = self.position_y
-                self.velocity_y = self.velocity_y
-                self.acceleration_y = y
-            else:
-                print('deadband inactive: {}'.format(y))
-                velocity = self.velocity_y + ((self.acceleration_y + y)*(1/2))*(time.time() - self.time)
-                position = self.position_y + ((velocity +  self.velocity_y)*(1/2))*(time.time() - self.time)
-                self.velocity_y = velocity
-                self.position_y = position
-                self.acceleration_y = y
-
-    def updateZposition(self, z):
-
-        # Just do it for x to start
-        if self.first_pass_z is True:
-            delta_a = z - self.acceleration_0_z
-            if np.abs(delta_a) < self.deadband:
-                self.position_z = self.position_z
-                self.velocity_z = self.velocity_z
-                self.acceleration_z = z
-            else:
-                velocity = self.velocity_0_z + ((self.acceleration_0_z + z)*(1/2))*(time.time() - self.time)
-                delta_a = z - self.acceleration_0_z
-                position = self.position_0_z + ((velocity +  self.velocity_0_z)*(1/2))*(time.time() - self.time)
-                self.first_pass_z = False
-                self.velocity_z = velocity
-                self.position_z = position
-                self.acceleration_z = z
-        else:
-            delta_a = z - self.acceleration_z
-            if np.abs(delta_a) < self.deadband:
-                self.position_z = self.position_z
-                self.velocity_z = self.velocity_z
-                self.acceleration_z = z
-            else:
-                velocity = self.velocity_z + ((self.acceleration_z + z)*(1/2))*(time.time() - self.time)
-                position = self.position_z + ((velocity +  self.velocity_z)*(1/2))*(time.time() - self.time)
-                self.velocity_z = velocity
-                self.position_z = position
-                self.acceleration_z = z
+        return velocity, position, acc
 
     def listener(self):
 
